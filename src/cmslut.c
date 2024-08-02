@@ -363,6 +363,8 @@ static
 void MatrixElemTypeFree(cmsStage* mpe)
 {
     _cmsStageMatrixData* Data = (_cmsStageMatrixData*) mpe ->Data;
+    if (Data == NULL)
+        return;
     if (Data ->Double)
         _cmsFree(mpe ->ContextID, Data ->Double);
 
@@ -497,10 +499,15 @@ void* CLUTElemDup(cmsStage* mpe)
 
     if (Data ->Tab.T) {
 
-        if (Data ->HasFloatValues)
+        if (Data ->HasFloatValues) {
             NewElem ->Tab.TFloat = (cmsFloat32Number*) _cmsDupMem(mpe ->ContextID, Data ->Tab.TFloat, Data ->nEntries * sizeof (cmsFloat32Number));
-        else
+            if (NewElem ->Tab.TFloat == NULL)
+                goto Error;
+        } else {
             NewElem ->Tab.T = (cmsUInt16Number*) _cmsDupMem(mpe ->ContextID, Data ->Tab.T, Data ->nEntries * sizeof (cmsUInt16Number));
+            if (NewElem ->Tab.TFloat == NULL)
+                goto Error;
+        }
     }
 
     NewElem ->Params   = _cmsComputeInterpParamsEx(mpe ->ContextID,
@@ -509,8 +516,14 @@ void* CLUTElemDup(cmsStage* mpe)
                                                    Data ->Params ->nOutputs,
                                                    NewElem ->Tab.T,
                                                    Data ->Params ->dwFlags);
-
-    return (void*) NewElem;
+    if (NewElem->Params != NULL)
+        return (void*) NewElem;
+ Error:
+    if (NewElem->Tab.T)
+        // This works for both types
+        _cmsFree(mpe ->ContextID, NewElem -> Tab.T);
+    _cmsFree(mpe ->ContextID, NewElem);
+    return NULL;
 }
 
 
@@ -543,6 +556,13 @@ cmsStage* CMSEXPORT cmsStageAllocCLut16bitGranular(cmsContext ContextID,
     cmsUInt32Number i, n;
     _cmsStageCLutData* NewElem;
     cmsStage* NewMPE;
+
+    _cmsAssert(clutPoints != NULL);
+
+    if (inputChan > MAX_INPUT_DIMENSIONS) {
+        cmsSignalError(ContextID, cmsERROR_RANGE, "Too many input channels (%d channels, max=%d)", inputChan, MAX_INPUT_DIMENSIONS);
+        return NULL;
+    }
 
     NewMPE = _cmsStageAllocPlaceholder(ContextID, cmsSigCLutElemType, inputChan, outputChan,
                                      EvaluateCLUTfloatIn16, CLUTElemDup, CLutElemTypeFree, NULL );
@@ -600,7 +620,6 @@ cmsStage* CMSEXPORT cmsStageAllocCLut16bit(cmsContext ContextID,
     for (i=0; i < MAX_INPUT_DIMENSIONS; i++)
         Dimensions[i] = nGridPoints;
 
-
     return cmsStageAllocCLut16bitGranular(ContextID, Dimensions, inputChan, outputChan, Table);
 }
 
@@ -630,6 +649,11 @@ cmsStage* CMSEXPORT cmsStageAllocCLutFloatGranular(cmsContext ContextID, const c
     cmsStage* NewMPE;
 
     _cmsAssert(clutPoints != NULL);
+
+    if (inputChan > MAX_INPUT_DIMENSIONS) {
+        cmsSignalError(ContextID, cmsERROR_RANGE, "Too many input channels (%d channels, max=%d)", inputChan, MAX_INPUT_DIMENSIONS);
+        return NULL;
+    }
 
     NewMPE = _cmsStageAllocPlaceholder(ContextID, cmsSigCLutElemType, inputChan, outputChan,
                                              EvaluateCLUTfloat, CLUTElemDup, CLutElemTypeFree, NULL);
@@ -665,15 +689,11 @@ cmsStage* CMSEXPORT cmsStageAllocCLutFloatGranular(cmsContext ContextID, const c
         }
     }
 
-
-
     NewElem ->Params = _cmsComputeInterpParamsEx(ContextID, clutPoints,  inputChan, outputChan, NewElem ->Tab.TFloat, CMS_LERP_FLAGS_FLOAT);
     if (NewElem ->Params == NULL) {
         cmsStageFree(NewMPE);
         return NULL;
     }
-
-
 
     return NewMPE;
 }
@@ -732,7 +752,7 @@ cmsBool CMSEXPORT cmsStageSampleCLut16bit(cmsStage* mpe, cmsSAMPLER16 Sampler, v
     int i, t, nTotalPoints, index, rest;
     int nInputs, nOutputs;
     cmsUInt32Number* nSamples;
-    cmsUInt16Number In[cmsMAXCHANNELS], Out[MAX_STAGE_CHANNELS];
+    cmsUInt16Number In[MAX_INPUT_DIMENSIONS+1], Out[MAX_STAGE_CHANNELS];
     _cmsStageCLutData* clut;
 
     if (mpe == NULL) return FALSE;
@@ -745,7 +765,9 @@ cmsBool CMSEXPORT cmsStageSampleCLut16bit(cmsStage* mpe, cmsSAMPLER16 Sampler, v
     nInputs  = clut->Params ->nInputs;
     nOutputs = clut->Params ->nOutputs;
 
-    if (nInputs >= cmsMAXCHANNELS) return FALSE;
+    if (nInputs <= 0) return FALSE;
+    if (nOutputs <= 0) return FALSE;
+    if (nInputs > MAX_INPUT_DIMENSIONS) return FALSE;
     if (nOutputs >= MAX_STAGE_CHANNELS) return FALSE;
 
     nTotalPoints = CubeSize(nSamples, nInputs);
@@ -792,14 +814,16 @@ cmsBool CMSEXPORT cmsStageSampleCLutFloat(cmsStage* mpe, cmsSAMPLERFLOAT Sampler
     int i, t, nTotalPoints, index, rest;
     int nInputs, nOutputs;
     cmsUInt32Number* nSamples;
-    cmsFloat32Number In[cmsMAXCHANNELS], Out[MAX_STAGE_CHANNELS];
+    cmsFloat32Number In[MAX_INPUT_DIMENSIONS+1], Out[MAX_STAGE_CHANNELS];
     _cmsStageCLutData* clut = (_cmsStageCLutData*) mpe->Data;
 
     nSamples = clut->Params ->nSamples;
     nInputs  = clut->Params ->nInputs;
     nOutputs = clut->Params ->nOutputs;
 
-    if (nInputs >= cmsMAXCHANNELS) return FALSE;
+    if (nInputs <= 0) return FALSE;
+    if (nOutputs <= 0) return FALSE;
+    if (nInputs  > MAX_INPUT_DIMENSIONS) return FALSE;
     if (nOutputs >= MAX_STAGE_CHANNELS) return FALSE;
 
     nTotalPoints = CubeSize(nSamples, nInputs);
@@ -981,6 +1005,7 @@ cmsStage* _cmsStageAllocLabV2ToV4curves(cmsContext ContextID)
     mpe = cmsStageAllocToneCurves(ContextID, 3, LabTable);
     cmsFreeToneCurveTriple(LabTable);
 
+    if (mpe == NULL) return NULL;
     mpe ->Implements = cmsSigLabV2toV4;
     return mpe;
 }
@@ -1384,6 +1409,8 @@ cmsPipeline* CMSEXPORT cmsPipelineDup(const cmsPipeline* lut)
     if (lut == NULL) return NULL;
 
     NewLUT = cmsPipelineAlloc(lut ->ContextID, lut ->InputChannels, lut ->OutputChannels);
+    if (NewLUT == NULL) return NULL;
+
     for (mpe = lut ->Elements;
          mpe != NULL;
          mpe = mpe ->Next) {
